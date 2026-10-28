@@ -22,8 +22,10 @@ from tau2.runner import build_environment, get_tasks, run_tasks
 from tau2.utils.llm_utils import generate
 
 from retail_agent.agent import Mode, create_skill_agent
+from retail_agent.gating import gate
 from retail_agent.mining import mine
 from retail_agent.skills import SkillLibrary
+from retail_agent.splits import PARTS, train_part
 from retail_agent.trajectories import TrajectoryStore, load_trajectories
 
 DOMAIN = "retail"
@@ -67,8 +69,13 @@ def read_meta(results_path: Path) -> dict:
 
 def cmd_run(args: argparse.Namespace) -> None:
     mode = Mode(args.mode)
+    task_ids = args.task_ids
+    if args.part:
+        if args.split != "train":
+            raise SystemExit("--part only applies to --split train")
+        task_ids = [t for t in train_part(args.part) if not task_ids or t in task_ids]
     tasks = get_tasks(
-        DOMAIN, task_split_name=args.split, task_ids=args.task_ids, num_tasks=args.num_tasks
+        DOMAIN, task_split_name=args.split, task_ids=task_ids, num_tasks=args.num_tasks
     )
     eval_ids = {t.id for t in tasks}
 
@@ -94,6 +101,7 @@ def cmd_run(args: argparse.Namespace) -> None:
             {
                 "mode": mode.value,
                 "split": args.split,
+                "part": args.part,
                 "trials": args.trials,
                 "top_k": args.top_k,
                 "agent_llm": args.agent_llm,
@@ -131,6 +139,9 @@ def cmd_mine(args: argparse.Namespace) -> None:
         if split != "train":
             raise SystemExit(f"Refusing to mine {p}: split is {split!r}, not 'train'")
     trajectories = load_trajectories(args.results)
+    if args.part:
+        keep = set(train_part(args.part))
+        trajectories = [t for t in trajectories if t.task_id in keep]
     policy = build_environment(DOMAIN).get_policy()
     library, candidates = mine(
         policy,
@@ -140,12 +151,31 @@ def cmd_mine(args: argparse.Namespace) -> None:
         llm_args=llm_args(max_tokens=16384, response_format={"type": "json_object"}),
         max_skills=args.max_skills,
         concurrency=args.concurrency,
+        failures_only=args.failures_only,
     )
     library.save(args.out)
     Path(args.out).with_suffix(".candidates.yaml").write_text(
         yaml.safe_dump([c.model_dump() for c in candidates], sort_keys=False, allow_unicode=True)
     )
     print(f"Saved {len(library)} skills to {args.out} ({len(candidates)} candidates)")
+
+
+def cmd_gate(args: argparse.Namespace) -> None:
+    meta = read_meta(Path(args.val))
+    if meta.get("part") != "val" or meta.get("skills") != args.skills:
+        raise SystemExit(f"{args.val} is not a validation run of {args.skills}")
+    library = SkillLibrary.load(args.skills)
+    baseline = [s for p in args.baseline for s in Results.load(Path(p)).simulations]
+    gated, effects = gate(
+        library, Results.load(Path(args.val)).simulations, baseline, args.min_uses
+    )
+    for e in effects:
+        effect = "n/a" if e.effect is None else f"{e.effect:+.2f}"
+        print(f"{'keep' if e.kept else 'drop'}  {e.name:40} uses={e.uses:3}  effect={effect}")
+    if not gated.skills:
+        raise SystemExit("Gate dropped every skill; nothing saved")
+    gated.save(args.out)
+    print(f"Saved {len(gated)} of {len(library)} skills to {args.out}")
 
 
 def summarize(path: Path, results: Results | None = None) -> dict:
@@ -249,6 +279,7 @@ def main() -> None:
     r = sub.add_parser("run", help="evaluate one agent configuration on a task split")
     r.add_argument("--mode", choices=[m.value for m in Mode], default=Mode.VANILLA.value)
     r.add_argument("--split", choices=["train", "test", "base"], default="test")
+    r.add_argument("--part", choices=PARTS, help="mining or validation part of the train split")
     r.add_argument("--task-ids", nargs="+")
     r.add_argument("--num-tasks", type=int)
     r.add_argument("--trials", type=int, default=1)
@@ -268,8 +299,20 @@ def main() -> None:
     m.add_argument("--out", default="skills/retail.yaml")
     m.add_argument("--llm", default=os.getenv("RAS_MINER_LLM", agent_llm))
     m.add_argument("--max-skills", type=int, default=12)
+    m.add_argument("--part", choices=PARTS, help="only use trajectories of this train part")
+    m.add_argument(
+        "--failures-only", action="store_true", help="mine only from tasks the agent failed"
+    )
     m.add_argument("--concurrency", type=int, default=4)
     m.set_defaults(func=cmd_mine)
+
+    gt = sub.add_parser("gate", help="drop skills whose use hurt on validation tasks")
+    gt.add_argument("--skills", required=True, help="library the validation run used")
+    gt.add_argument("--val", required=True, help="results.json of the validation run")
+    gt.add_argument("--baseline", nargs="+", required=True, help="plain-agent results.json")
+    gt.add_argument("--out", required=True)
+    gt.add_argument("--min-uses", type=int, default=2)
+    gt.set_defaults(func=cmd_gate)
 
     rep = sub.add_parser("report", help="markdown table over finished runs")
     rep.add_argument("results", nargs="+")

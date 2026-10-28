@@ -1,6 +1,7 @@
 """Offline tests: every LLM call is replaced by a scripted fake."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 from tau2.data_model.message import AssistantMessage, ToolCall, ToolMessage, UserMessage
@@ -224,3 +225,54 @@ def test_mine_reflects_per_task_then_consolidates():
     assert [c.provenance for c in candidates] == [["1"], ["2"]]
     assert len(library) == 1 and library.skills[0].provenance == ["1", "2"]
     assert len(llm.calls) == 3
+
+
+def test_failures_only_mining_skips_clean_tasks():
+    candidate = EXCHANGE.model_dump(exclude={"provenance", "version"})
+    llm = FakeLLM([json.dumps({"skills": [candidate]}), json.dumps({"skills": [candidate]})])
+    _, candidates = mine(
+        "policy",
+        [traj("1", 1.0), traj("1", 1.0, trial=1), traj("2", 1.0), traj("2", 0.0, trial=1)],
+        model="fake",
+        concurrency=1,
+        generate_fn=llm,
+        failures_only=True,
+    )
+    assert [c.provenance for c in candidates] == [["2"]]
+    assert "learning from its mistakes" in llm.calls[0]["messages"][0].content
+
+
+def test_train_parts_are_disjoint_and_cover_train():
+    from retail_agent.splits import train_part
+
+    mine_ids, val_ids = set(train_part("mine")), set(train_part("val"))
+    assert not mine_ids & val_ids
+    assert len(mine_ids | val_ids) == 74 and len(val_ids) == 25
+
+
+def sim(task_id, reward, skills=()):
+    from tau2.data_model.simulation import RewardInfo
+
+    msg = AssistantMessage(
+        role="assistant", content="ok", raw_data={"retail_agent": {"skills_read": list(skills)}}
+    )
+    return SimpleNamespace(task_id=task_id, reward_info=RewardInfo(reward=reward), messages=[msg])
+
+
+def test_gate_drops_skills_used_in_regressions():
+    from retail_agent.gating import gate
+
+    lib = SkillLibrary([EXCHANGE, CANCEL, Skill(name="unused", description="x", steps=["y"])])
+    baseline = [sim("1", 1.0), sim("1", 1.0), sim("2", 0.0), sim("2", 1.0)]
+    val = [
+        sim("1", 0.0, [EXCHANGE.name]),  # plain agent always solved task 1
+        sim("1", 1.0, [EXCHANGE.name]),
+        sim("2", 1.0, [CANCEL.name]),  # plain agent solved task 2 half the time
+        sim("2", 1.0, [CANCEL.name]),
+    ]
+    gated, effects = gate(lib, val, baseline)
+    assert [s.name for s in gated.skills] == [CANCEL.name]
+    by_name = {e.name: e for e in effects}
+    assert by_name[EXCHANGE.name].effect == pytest.approx(-0.5)
+    assert by_name[CANCEL.name].effect == pytest.approx(0.5)
+    assert by_name["unused"].uses == 0 and not by_name["unused"].kept

@@ -4,7 +4,9 @@ The miner only sees what a deployed agent could see: its transcripts and a
 pass/fail outcome per conversation. It never sees the benchmark's gold actions.
 
 1. reflect:     per task, compare the agent's successful and failed attempts (or
-                study a lone success/failure) and propose candidate skills.
+                study a lone success/failure) and propose candidate skills. With
+                ``failures_only`` only tasks the agent failed at least once are used,
+                and each candidate is written around the mistake that was made.
 2. consolidate: merge near-duplicate candidates into a library of at most
                 ``max_skills`` skills, keeping provenance.
 """
@@ -49,6 +51,24 @@ When both outcomes exist, find what the successful attempt did differently and
 write that as steps or pitfalls. For a lone failure, infer the most likely
 mistake from the policy and the transcript. Propose at most 2 skills, or none if
 the conversation teaches nothing beyond the policy text.
+
+{SKILL_FORMAT}
+
+Answer with JSON only: {{"skills": [ ... ]}}
+""".strip()
+
+FAILURE_REFLECT_SYSTEM = f"""
+You improve a customer-service agent by learning from its mistakes. You receive the
+domain policy and attempts at one customer request, each marked SUCCESS or FAILURE
+by an automatic grader that checks the final database state and required replies.
+At least one attempt failed.
+
+Find the specific mistake the agent made in the failed attempt; if a successful
+attempt is given, the mistake is what it did differently. Write at most 1 skill
+around that mistake: "when_to_use" names the situation in which the mistake is
+likely, "steps" are the 1-3 checks that prevent it, and "pitfalls" states the
+mistake itself. Return no skill if the failure came from the simulated customer
+(for example, it changed its mind or gave wrong information) rather than the agent.
 
 {SKILL_FORMAT}
 
@@ -128,16 +148,18 @@ def reflect(
     llm_args: dict,
     concurrency: int = 4,
     generate_fn: Callable = generate,
+    failures_only: bool = False,
 ) -> list[Skill]:
     by_task: dict[str, list[Trajectory]] = defaultdict(list)
     for t in trajectories:
         by_task[t.task_id].append(t)
+    if failures_only:
+        by_task = {k: v for k, v in by_task.items() if any(not t.success for t in v)}
+    system = FAILURE_REFLECT_SYSTEM if failures_only else REFLECT_SYSTEM
 
     def one(task_id: str) -> list[Skill]:
         attempts = pick_attempts(by_task[task_id])
-        raw = _ask_json(
-            generate_fn, model, llm_args, REFLECT_SYSTEM, _attempts_prompt(policy, attempts)
-        )
+        raw = _ask_json(generate_fn, model, llm_args, system, _attempts_prompt(policy, attempts))
         return _to_skills(raw, provenance=[task_id])
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
@@ -176,9 +198,12 @@ def mine(
     max_skills: int = 12,
     concurrency: int = 4,
     generate_fn: Callable = generate,
+    failures_only: bool = False,
 ) -> tuple[SkillLibrary, list[Skill]]:
     llm_args = llm_args or {}
-    candidates = reflect(policy, trajectories, model, llm_args, concurrency, generate_fn)
+    candidates = reflect(
+        policy, trajectories, model, llm_args, concurrency, generate_fn, failures_only
+    )
     logger.info(f"{len(candidates)} candidate skills from {len(trajectories)} trajectories")
     if not candidates:
         return SkillLibrary([]), []
