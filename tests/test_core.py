@@ -37,7 +37,13 @@ class FakeLLM:
         self.calls = []
 
     def __call__(self, model, messages, tools=None, **kwargs):
-        self.calls.append({"messages": messages, "tools": [t.name for t in tools or []]})
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": [t.name for t in tools or []],
+                "tool_choice": kwargs.get("tool_choice"),
+            }
+        )
         reply = self.replies.pop(0)
         if isinstance(reply, str):
             reply = AssistantMessage(role="assistant", content=reply)
@@ -88,7 +94,7 @@ def test_vanilla_is_one_plain_llm_call(env):
     msg, state = agent.generate_next_message(user("hi"), agent.get_init_state())
     assert msg.content == "Hello, how can I help?"
     assert len(llm.calls) == 1
-    assert "read_skill" not in llm.calls[0]["tools"]
+    assert "read_skills" not in llm.calls[0]["tools"]
     assert "<skill" not in llm.calls[0]["messages"][0].content
     assert [m.role for m in state.messages] == ["user", "assistant"]
 
@@ -107,10 +113,10 @@ def test_skills_inject_puts_relevant_skill_in_prompt(env):
     assert msg.raw_data["retail_agent"]["retrieved"] == ["exchange_delivered_items"]
 
 
-def test_skills_index_reads_skill_internally_then_acts(env):
+def test_skills_index_routes_then_acts(env):
     llm = FakeLLM(
         [
-            tool_call("read_skill", name="exchange_delivered_items"),
+            tool_call("read_skills", names=["exchange_delivered_items"]),
             tool_call("find_user_id_by_email", email="a@b.com"),
         ]
     )
@@ -119,12 +125,14 @@ def test_skills_index_reads_skill_internally_then_acts(env):
         user("exchange please, a@b.com"), agent.get_init_state()
     )
 
-    # Only the environment call leaves the agent.
+    # The first call is forced to choose skills; only the environment call leaves the agent.
+    assert llm.calls[0]["tool_choice"]["function"]["name"] == "read_skills"
+    assert llm.calls[1]["tool_choice"] is None
     assert [c.name for c in msg.tool_calls] == ["find_user_id_by_email"]
-    # The skill body was visible to the second LLM call.
+    # The skill body was visible to the second LLM call, the index to both.
     second = llm.calls[1]["messages"]
     assert isinstance(second[-1], ToolMessage) and "only be called once" in second[-1].content
-    assert "read_skill" in llm.calls[0]["tools"]
+    assert "- cancel_pending_order:" in second[0].content
     # Cost and tokens cover both LLM calls.
     assert msg.cost == pytest.approx(0.002)
     assert msg.usage == {"prompt_tokens": 200, "completion_tokens": 20}
@@ -133,13 +141,45 @@ def test_skills_index_reads_skill_internally_then_acts(env):
     assert [m.role for m in state.messages] == ["user", "assistant", "tool", "assistant"]
 
 
+def test_skills_index_routes_only_on_user_turns_and_skips_loaded(env):
+    lib = SkillLibrary([EXCHANGE])
+    llm = FakeLLM(
+        [
+            tool_call("read_skills", names=["exchange_delivered_items"]),
+            tool_call("find_user_id_by_email", email="a@b.com"),
+            "Found you. Which items?",  # after the tool result: no routing
+            tool_call("read_skills", names=["exchange_delivered_items"]),  # next user turn
+            "Got it.",
+        ]
+    )
+    agent = make_agent(env, Mode.SKILLS_INDEX, llm, library=lib)
+    _, state = agent.generate_next_message(user("exchange, a@b.com"), agent.get_init_state())
+    result = ToolMessage(id="call_find_user_id_by_email", role="tool", content="u1")
+    _, state = agent.generate_next_message(result, state)
+    msg, state = agent.generate_next_message(user("the keyboard"), state)
+    assert [c["tool_choice"] is not None for c in llm.calls] == [True, False, False, True, False]
+    assert "already loaded" in state.messages[-2].content
+    assert state.skills_read == ["exchange_delivered_items"]
+    assert msg.content == "Got it."
+
+
+def test_skills_index_route_may_choose_nothing(env):
+    llm = FakeLLM([tool_call("read_skills", names=[]), "Could you share your email?"])
+    agent = make_agent(env, Mode.SKILLS_INDEX, llm, library=SkillLibrary([EXCHANGE]))
+    msg, state = agent.generate_next_message(user("hello"), agent.get_init_state())
+    assert msg.content == "Could you share your email?"
+    assert state.messages[2].content == "No skills loaded."
+    assert msg.raw_data["retail_agent"]["skills_read"] == []
+
+
 def test_skills_index_caps_reads_and_handles_unknown_names(env):
-    reads = [tool_call("read_skill", name="nope") for _ in range(3)]
+    reads = [tool_call("read_skills", names=["nope"]) for _ in range(3)]
     llm = FakeLLM([*reads, "Could you share your email?"])
     agent = make_agent(env, Mode.SKILLS_INDEX, llm, library=SkillLibrary([EXCHANGE]))
     msg, state = agent.generate_next_message(user("hello"), agent.get_init_state())
     assert msg.content == "Could you share your email?"
-    assert "read_skill" not in llm.calls[-1]["tools"]
+    assert "read_skills" in llm.calls[-2]["tools"]
+    assert "read_skills" not in llm.calls[-1]["tools"]
     errors = [m for m in state.messages if isinstance(m, ToolMessage)]
     assert len(errors) == 3 and all(m.error for m in errors)
 

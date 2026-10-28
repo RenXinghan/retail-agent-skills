@@ -18,21 +18,32 @@ the agent either replies or calls one environment tool. Each turn of this agent 
 small [LangGraph](https://github.com/langchain-ai/langgraph) state graph:
 
 ```
-ingest ──► [retrieve] ──► act ──► finalize ──► reply or tool call
-                          ▲  │
-                          │  ▼  (skills_index only)
-                        read_skill
+                ┌─► retrieve ────────────────┐   (trajectories, skills_inject)
+ingest ─────────┼─► route ──► read_skills ───┼─► act ──► finalize ──► reply or tool call
+  (customer     └────────────────────────────┘    ▲  │
+   turns only)                                    │  ▼   (skills_index, optional)
+                                               read_skills
 ```
 
 - **retrieve** runs on customer turns in the `trajectories` and `skills_inject` modes and ranks
   memory (past transcripts or skills) with BM25+ over everything the customer has said so far.
+- **route** runs on customer turns in `skills_index` mode. The prompt lists only skill names and
+  one-line descriptions; route is one LLM call forced to answer with `read_skills`, choosing the
+  matching skills or none. The model can load more skills later in the turn.
+- **read_skills** is an *internal* tool: its calls are answered inside the graph and never reach
+  the environment, so they cannot change what the grader sees. At most 3 per turn.
 - **act** is one LLM call with the domain policy, any retrieved memory, and the tools.
-- **read_skill** is an *internal* tool: in `skills_index` mode the prompt lists only skill
-  names and one-line descriptions, and the model loads a full procedure on demand (progressive
-  disclosure). These calls are answered inside the graph and never reach the environment, so
-  they cannot change what the grader sees. Reads are capped at 3 per turn.
-- **finalize** sums tokens and cost over all LLM calls in the turn and records which memory
-  was retrieved or read, so every reply in the results file says what context produced it.
+- **finalize** sums tokens, cache hits and cost over all LLM calls in the turn and records which
+  memory was retrieved or read, so every reply in the results file says what context produced it.
+
+**Why route is forced.** The first version only offered the skill tool. In a 5-task pilot
+DeepSeek-V4.1-Flash never called it (0 reads over 5 conversations). After both the prompt and
+the tool description were rewritten to say "read a matching skill before anything else", it
+still skipped the tool on 3 of 3 opening requests and went straight to authentication, which
+the policy requires first. It does call the tool when asked directly, and a forced call picks sensible skills
+(exchange → exchange skill, return → return skill, cancel → none when the library has no
+cancellation skill). Making the selection a mandatory step keeps the context small (only chosen
+skills are loaded) without relying on the model to remember that memory exists.
 
 ## Memory configurations
 
@@ -41,7 +52,7 @@ ingest ──► [retrieve] ──► act ──► finalize ──► reply or 
 | `vanilla` | policy + tools (the τ²-bench reference prompt) |
 | `trajectories` | top-k successful past transcripts as examples |
 | `skills_inject` | top-k full skills from the mined library |
-| `skills_index` | index of all skills; the model reads the ones it needs |
+| `skills_index` | index of all skills; on each customer turn the model picks which to load |
 
 ## Learning protocol
 

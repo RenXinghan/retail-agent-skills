@@ -38,6 +38,8 @@ def llm_args(**kwargs) -> dict:
 
 
 JUDGE_ARGS = llm_args(response_format={"type": "json_object"})
+# DeepSeek V4.1 Flash off-peak, RMB per 1M tokens: cache miss, cache hit, output.
+PRICES = os.getenv("RAS_PRICES", "1,0.02,4")
 
 
 def configure_judge(model: str) -> None:
@@ -134,7 +136,8 @@ def cmd_mine(args: argparse.Namespace) -> None:
         policy,
         trajectories,
         model=args.llm,
-        llm_args=llm_args(),
+        # Room for a whole library in one JSON reply during consolidation.
+        llm_args=llm_args(max_tokens=16384, response_format={"type": "json_object"}),
         max_skills=args.max_skills,
         concurrency=args.concurrency,
     )
@@ -150,7 +153,7 @@ def summarize(path: Path, results: Results | None = None) -> dict:
     meta = read_meta(path)
     metrics = compute_metrics(results)
     sims = results.simulations
-    tokens = calls = reads = steps = 0
+    tokens = calls = reads = steps = prompt = hits = completion = 0
     for sim in sims:
         for m in sim.messages or []:
             # Skips tau2's scripted greeting, which never reaches the agent.
@@ -161,12 +164,16 @@ def summarize(path: Path, results: Results | None = None) -> dict:
                 continue
             steps += 1
             if m.usage:
-                tokens += (m.usage.get("prompt_tokens") or 0) + (
-                    m.usage.get("completion_tokens") or 0
-                )
+                prompt += m.usage.get("prompt_tokens") or 0
+                completion += m.usage.get("completion_tokens") or 0
+            hits += info.get("prompt_cache_hit_tokens", 0)
             calls += info["llm_calls"]
             reads += len(info["skills_read"])
     n = max(len(sims), 1)
+    tokens = prompt + completion
+    # Agent-side cost per conversation from RAS_PRICES="miss,hit,output" per 1M tokens.
+    miss_price, hit_price, out_price = (float(x) for x in PRICES.split(","))
+    cost = ((prompt - hits) * miss_price + hits * hit_price + completion * out_price) / 1e6
     return {
         "run": path.parent.name,
         "mode": meta.get("mode"),
@@ -176,6 +183,8 @@ def summarize(path: Path, results: Results | None = None) -> dict:
         "avg_reward": round(metrics.avg_reward, 3),
         "pass^k": {k: round(v, 3) for k, v in metrics.pass_hat_ks.items()},
         "agent_tokens_per_sim": round(tokens / n),
+        "cache_hit_rate": round(hits / max(prompt, 1), 2),
+        "agent_cost_per_sim": round(cost / n, 4),
         "llm_calls_per_step": round(calls / max(steps, 1), 2),
         "skill_reads_per_sim": round(reads / n, 2),
         "infra_errors": metrics.infra_error_count,
@@ -193,6 +202,8 @@ def cmd_report(args: argparse.Namespace) -> None:
         "trials",
         *[f"pass^{k}" for k in ks],
         "agent tokens/sim",
+        "cache hit",
+        "agent cost/sim",
         "LLM calls/step",
         "skill reads/sim",
     ]
@@ -207,6 +218,8 @@ def cmd_report(args: argparse.Namespace) -> None:
             r["trials"],
             *[r["pass^k"].get(k, "") for k in ks],
             r["agent_tokens_per_sim"],
+            f"{r['cache_hit_rate']:.0%}",
+            r["agent_cost_per_sim"],
             r["llm_calls_per_step"],
             r["skill_reads_per_sim"],
         ]

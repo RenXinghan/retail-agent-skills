@@ -2,12 +2,15 @@
 
 Each call to ``generate_next_message`` runs the graph once:
 
-    ingest -> [retrieve] -> act <-> read_skill -> finalize
+    ingest -> [retrieve | route -> read_skills] -> act <-> read_skills -> finalize
 
 ``act`` is one LLM call. In ``skills_index`` mode the model only sees a one-line
-index of the skill library and can call an internal ``read_skill`` tool to load a
-full procedure; those calls are answered inside the graph and never reach the
-environment, so they cannot affect the evaluated trajectory.
+index of the skill library and loads full procedures with an internal
+``read_skills`` tool. Left optional, the model never used that tool in our pilot,
+so on every customer turn ``route`` forces one ``read_skills`` call in which the
+model picks the matching skills (possibly none); it may load more later. Those
+calls are answered inside the graph and never reach the environment, so they
+cannot affect the evaluated trajectory.
 """
 
 from __future__ import annotations
@@ -40,10 +43,10 @@ class Mode(StrEnum):
     VANILLA = "vanilla"
     TRAJECTORIES = "trajectories"  # top-k raw train trajectories as examples
     SKILLS_INJECT = "skills_inject"  # top-k full skills in the system prompt
-    SKILLS_INDEX = "skills_index"  # skill index + on-demand read_skill tool
+    SKILLS_INDEX = "skills_index"  # skill index + model-selected read_skills
 
 
-READ_SKILL = "read_skill"
+READ_SKILLS = "read_skills"
 MAX_SKILL_READS_PER_STEP = 3
 
 SYSTEM_PROMPT = """
@@ -66,9 +69,10 @@ above always takes precedence.
 
 SKILLS_INDEX_BLOCK = """
 <skill_index>
-Procedures learned from earlier conversations, listed by name. Call `read_skill` with
-a name to load the full procedure before you act on a matching request. Reading a
-skill is internal and invisible to the user. The policy above always takes precedence.
+Procedures learned from earlier conversations, listed by name. They hold steps and
+pitfalls that the policy alone does not spell out. Use `read_skills` to load the ones that
+match the user's request. Loading skills is internal: it is invisible to the user and does
+not use up your turn. The policy above always takes precedence.
 
 {index}
 </skill_index>
@@ -84,14 +88,15 @@ the policy was applied; the details of the current user will differ.
 """.strip()
 
 
-def read_skill(name: str) -> str:
-    """Load the full procedure of a skill from the skill index.
+def read_skills(names: list[str]) -> str:
+    """Load the full procedures of skills from the skill index.
 
     Args:
-        name: The exact skill name as listed in the skill index.
+        names: Exact skill names from the skill index that match the user's request;
+            an empty list if none match.
 
     Returns:
-        The skill's steps and pitfalls.
+        The steps and pitfalls of each skill.
     """
     raise NotImplementedError("Answered inside the agent graph")
 
@@ -113,7 +118,7 @@ class TurnState(TypedDict, total=False):
     retrieved: list[str]
     response: AssistantMessage
     calls: list[AssistantMessage]
-    reads: int
+    reads: int  # read_skills calls this turn
     step_reads: list[str]
     skills_read: list[str]
 
@@ -143,7 +148,7 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
         self.store = store
         self.top_k = top_k
         self._generate = generate_fn
-        self._read_skill_tool = as_tool(read_skill)
+        self._read_skills_tool = as_tool(read_skills)
         self._graph = self._build_graph()
 
     # ---- tau2 interface ----
@@ -173,14 +178,22 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
         g = StateGraph(TurnState)
         g.add_node("ingest", self._ingest)
         g.add_node("retrieve", self._retrieve)
+        g.add_node("route", self._route)
         g.add_node("act", self._act)
-        g.add_node("read_skill", self._read_skill)
+        g.add_node("read_skills", self._read_skills)
         g.add_node("finalize", self._finalize)
         g.add_edge(START, "ingest")
-        g.add_conditional_edges("ingest", self._after_ingest, ["retrieve", "act"])
+        g.add_conditional_edges("ingest", self._after_ingest, ["retrieve", "route", "act"])
         g.add_edge("retrieve", "act")
-        g.add_conditional_edges("act", self._after_act, ["read_skill", "finalize"])
-        g.add_edge("read_skill", "act")
+        g.add_conditional_edges(
+            "route", lambda s: "read_skills" if self._internal(s) else "act", ["read_skills", "act"]
+        )
+        g.add_conditional_edges(
+            "act",
+            lambda s: "read_skills" if self._internal(s) else "finalize",
+            ["read_skills", "finalize"],
+        )
+        g.add_edge("read_skills", "act")
         g.add_edge("finalize", END)
         return g.compile()
 
@@ -190,8 +203,11 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
         return {"messages": s["messages"] + list(new), "calls": [], "reads": 0, "step_reads": []}
 
     def _after_ingest(self, s: TurnState) -> str:
-        retrieves = self.mode in (Mode.SKILLS_INJECT, Mode.TRAJECTORIES)
-        return "retrieve" if retrieves and isinstance(s["incoming"], UserMessage) else "act"
+        if not isinstance(s["incoming"], UserMessage):
+            return "act"
+        if self.mode in (Mode.SKILLS_INJECT, Mode.TRAJECTORIES):
+            return "retrieve"
+        return "route" if self.mode == Mode.SKILLS_INDEX else "act"
 
     def _retrieve(self, s: TurnState) -> TurnState:
         query = "\n".join(
@@ -219,8 +235,19 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
 
     def _tools(self, reads: int) -> list[Tool]:
         if self.mode == Mode.SKILLS_INDEX and reads < MAX_SKILL_READS_PER_STEP:
-            return [*self.tools, self._read_skill_tool]
+            return [*self.tools, self._read_skills_tool]
         return self.tools
+
+    def _route(self, s: TurnState) -> TurnState:
+        response = self._generate(
+            model=self.llm,
+            tools=self._tools(0),
+            tool_choice={"type": "function", "function": {"name": READ_SKILLS}},
+            messages=self._system_messages(s["context"]) + s["messages"],
+            call_name="skill_agent_route",
+            **self.llm_args,
+        )
+        return {"response": response, "calls": s["calls"] + [response]}
 
     def _act(self, s: TurnState) -> TurnState:
         response = self._generate(
@@ -232,31 +259,40 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
         )
         return {"response": response, "calls": s["calls"] + [response]}
 
-    def _after_act(self, s: TurnState) -> str:
-        calls = s["response"].tool_calls or []
-        return "read_skill" if any(c.name == READ_SKILL for c in calls) else "finalize"
+    def _internal(self, s: TurnState) -> bool:
+        return any(c.name == READ_SKILLS for c in s["response"].tool_calls or [])
 
-    def _read_skill(self, s: TurnState) -> TurnState:
+    def _read_skills(self, s: TurnState) -> TurnState:
         # Keep only the internal calls: environment calls made in the same message are
         # dropped so history stays consistent; the model re-issues them on the next act.
         response = s["response"]
-        internal = [c for c in response.tool_calls if c.name == READ_SKILL]
+        internal = [c for c in response.tool_calls if c.name == READ_SKILLS]
         call_msg = AssistantMessage(role="assistant", content=response.content, tool_calls=internal)
         results, read = [], []
         for c in internal:
-            name = str(c.arguments.get("name", ""))
-            skill = self.library.get(name)
-            if skill:
-                read.append(name)
-                content, error = skill.render(), False
-            else:
-                content = f"Unknown skill '{name}'. Available: " + ", ".join(
-                    sk.name for sk in self.library.skills
+            names = c.arguments.get("names") or []
+            names = [names] if isinstance(names, str) else [str(n) for n in names]
+            parts, unknown = [], []
+            for name in names:
+                if name in s["skills_read"] or name in read:
+                    parts.append(f"## {name}\n(already loaded earlier in this conversation)")
+                elif skill := self.library.get(name):
+                    read.append(name)
+                    parts.append(skill.render())
+                else:
+                    unknown.append(name)
+            if unknown:
+                parts.append(
+                    f"Unknown skills {unknown}. Available: "
+                    + ", ".join(sk.name for sk in self.library.skills)
                 )
-                error = True
             results.append(
                 ToolMessage(
-                    id=c.id, role="tool", content=content, requestor="assistant", error=error
+                    id=c.id,
+                    role="tool",
+                    content="\n\n".join(parts) or "No skills loaded.",
+                    requestor="assistant",
+                    error=bool(unknown),
                 )
             )
         return {
@@ -277,6 +313,9 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
                 k: sum(u.get(k) or 0 for u in usages)
                 for k in ("prompt_tokens", "completion_tokens")
             }
+        # Provider usage (incl. cache hits) of every call, before raw_data is replaced.
+        raw_usage = [(c.raw_data or {}).get("usage") or {} for c in calls]
+        cache_hits = sum(u.get("prompt_cache_hit_tokens") or 0 for u in raw_usage)
         response.raw_data = {
             **(response.raw_data or {}),
             "retail_agent": {
@@ -284,6 +323,7 @@ class SkillAgent(HalfDuplexAgent[SkillAgentState]):
                 "llm_calls": len(calls),
                 "retrieved": s.get("retrieved"),
                 "skills_read": s["step_reads"],
+                "prompt_cache_hit_tokens": cache_hits,
             },
         }
         return {"messages": s["messages"] + [response], "response": response}
