@@ -1,0 +1,40 @@
+[project]
+name = "retail-agent-skills"
+version = "0.1.0"
+description = "A LangGraph customer-service agent for tau2-bench retail that learns reusable skills from its own trajectories"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "tau2",
+    "langgraph>=0.6",
+    "rank-bm25>=0.2.2",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.9"]
+
+[project.scripts]
+ras = "retail_agent.cli:main"
+
+[tool.uv.sources]
+tau2 = { path = "third_party/tau2-bench", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/retail_agent"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["retail_agent"]
+known-third-party = ["tau2"]
