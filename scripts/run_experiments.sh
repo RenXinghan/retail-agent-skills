@@ -14,19 +14,19 @@ TAG=${TAG:-main}
 RAS=.venv/bin/ras
 
 # 1. Collect train trajectories with the plain agent.
-$RAS run --mode vanilla --split train --trials "$TRAIN_TRIALS" "${LIMIT[@]}" --name "$TAG-train-vanilla"
+$RAS run --mode vanilla --split train --trials "$TRAIN_TRIALS" ${LIMIT[@]+"${LIMIT[@]}"} --name "$TAG-train-vanilla"
 TRAIN=results/raw/$TAG-train-vanilla/results.json
 
 # 2. Distill skills from them.
 $RAS mine --results "$TRAIN" --out "skills/$TAG.yaml"
 
 # 3. Evaluate every memory configuration on the held-out test split.
-$RAS run --mode vanilla --split test --trials "$TEST_TRIALS" "${LIMIT[@]}" --name "$TAG-test-vanilla"
+$RAS run --mode vanilla --split test --trials "$TEST_TRIALS" ${LIMIT[@]+"${LIMIT[@]}"} --name "$TAG-test-vanilla"
 $RAS run --mode trajectories --trajectories "$TRAIN" --top-k "$TOP_K" --split test \
-  --trials "$TEST_TRIALS" "${LIMIT[@]}" --name "$TAG-test-trajectories"
+  --trials "$TEST_TRIALS" ${LIMIT[@]+"${LIMIT[@]}"} --name "$TAG-test-trajectories"
 $RAS run --mode skills_inject --skills "skills/$TAG.yaml" --top-k "$TOP_K" --split test \
-  --trials "$TEST_TRIALS" "${LIMIT[@]}" --name "$TAG-test-skills_inject"
+  --trials "$TEST_TRIALS" ${LIMIT[@]+"${LIMIT[@]}"} --name "$TAG-test-skills_inject"
 $RAS run --mode skills_index --skills "skills/$TAG.yaml" --split test \
-  --trials "$TEST_TRIALS" "${LIMIT[@]}" --name "$TAG-test-skills_index"
+  --trials "$TEST_TRIALS" ${LIMIT[@]+"${LIMIT[@]}"} --name "$TAG-test-skills_index"
 
 $RAS report results/raw/"$TAG"-test-*/results.json | tee "results/$TAG-test.md"

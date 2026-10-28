@@ -8,8 +8,8 @@ The question: if an agent keeps transcripts of its earlier conversations and onl
 whether each one ended well, can it distill procedures that make it more reliable on
 requests it has never seen? And how should that memory be put into context?
 
-> **Status:** the harness, skill miner and evaluation pipeline are implemented and tested
-> offline (mocked LLMs). No benchmark results yet; the table below fills in once runs finish.
+> **Status:** first full run done (2026-10-29). Skills mined this way did **not** help a strong
+> model: the skill-index agent lost 7.5 points of pass^1 against the plain agent (see Results).
 
 ## How the agent works
 
@@ -70,7 +70,39 @@ from, and `ras mine` refuses inputs that did not come from the train split.
 
 ## Results
 
-Not run yet.
+DeepSeek-V4.1-Flash (non-thinking, temperature 0) plays the agent, the simulated customer, the
+NL-assertion judge and the miner. Train: 74 tasks × 2 trials (plain agent pass^1 0.831), mined
+into 12 skills from 121 candidates (`skills/main.yaml`). Test: 40 held-out tasks × 3 trials.
+
+| mode | pass^1 | pass^2 | pass^3 | Δ pass^1 vs vanilla (95% CI) | tasks worse / better | agent tokens per conversation | agent cost per conversation | skills loaded per conversation |
+|---|---|---|---|---|---|---|---|---|
+| `vanilla` | **0.925** | **0.883** | **0.850** | — | — | 78k | ¥0.011 | — |
+| `trajectories` | 0.908 | 0.867 | **0.850** | −0.017 [−0.083, +0.042] | 4 / 4 | 157k | ¥0.036 | — |
+| `skills_inject` | 0.867 | 0.800 | 0.750 | −0.058 [−0.125, 0.000] | 7 / 2 | 87k | ¥0.024 | top 3 per turn |
+| `skills_index` | 0.850 | 0.767 | 0.700 | −0.075 [−0.133, −0.025] | 7 / 0 | 121k | ¥0.019 | 5.0 |
+
+CIs are paired bootstrap intervals over the 40 tasks. Cost is DeepSeek's off-peak RMB price with
+cache hits (79–94% of prompt tokens). The whole run cost about ¥15 and took one hour.
+
+What this shows:
+
+1. **The mined skills hurt.** The skill-index agent was worse on 7 tasks and better on none, and
+   its interval excludes zero; injecting skills trends the same way. Retrieving whole successful
+   transcripts was neutral but doubled the tokens.
+2. **There was little to gain.** The plain agent already solves 34 of 40 test tasks in all three
+   trials, and the library mostly restates the policy as step lists (authenticate, check status,
+   confirm before writing). A skill can only help on the handful of tasks the model still fails.
+3. **The failures are ordinary mistakes, not bad instructions.** In the regressed tasks
+   inspected so far (39, 49, 60, 86, 100) the agent picked the wrong variant or payment method,
+   saved an address the simulated customer invented, or dropped a second request. The plain agent
+   makes the same kinds of mistakes, only less often, and the skills these runs loaded
+   (`modify_pending_order_items`, `modify_pending_order_address`, `verify_variant_availability`)
+   agree with the policy. Conversations were not longer (6.4 vs 7.0 customer turns), but the
+   agent's context was 56% larger. The mechanism is not pinned down yet.
+
+Next: accept a skill only if it improves a held-out part of the train split (validation-gated
+updates), mine only from failures, and repeat on the harder airline domain (30 train / 20 test
+tasks) or with a weaker agent, where there is more headroom.
 
 ## Quickstart
 

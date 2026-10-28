@@ -1,0 +1,403 @@
+- name: authenticate_user
+  description: Verify the user's identity before any order, profile, or product lookup.
+  when_to_use:
+  - Start of any conversation referencing an order or account
+  - User provides email or name + zip code
+  - User volunteers a user id or order id
+  steps:
+  - Ask for email, or first name + last name + zip code (require legal name, not nickname).
+  - Call find_user_id_by_email or find_user_id_by_name_zip to resolve the user id;
+    retry with corrected spelling/zip if lookup fails.
+  - Call get_user_details to load profile, payment methods, and order list.
+  - Confirm any order acted on belongs to the authenticated user.
+  pitfalls:
+  - Looking up orders or profile data before authenticating.
+  - Skipping authentication because the user supplied an order id or partial details.
+  - Accepting a nickname as the first name.
+  - Giving up after one failed lookup instead of retrying with corrected details.
+  provenance:
+  - '0'
+  - '1'
+  - '6'
+  - '10'
+  - '21'
+  - '31'
+  - '67'
+  - '88'
+  version: 1
+- name: locate_order_by_description
+  description: Find the correct order when the user does not know the order id and
+    describes it by contents, address, or status.
+  when_to_use:
+  - User cannot provide an order id
+  - User refers to an order by product name, contents, or shipping destination
+  - User has multiple orders on their profile
+  steps:
+  - Authenticate the user first.
+  - Call get_user_details to retrieve the order list.
+  - Call get_order_details on each candidate order to inspect items, options, status,
+    and address.
+  - Match the described product/address to the correct order and report order id,
+    items, options, and status.
+  - If multiple orders match, present each with status and ask the user to confirm
+    which one.
+  pitfalls:
+  - Guessing or fabricating an order id.
+  - Confusing product_id with item_id when reporting items.
+  - Assuming the first order is the right one without checking contents.
+  - Acting on an order before the user confirms the specific order id.
+  provenance:
+  - '2'
+  - '24'
+  - '25'
+  - '91'
+  version: 1
+- name: disambiguate_item_reference
+  description: Resolve a vague or mistaken item reference by inspecting order details
+    and confirming the exact item id before acting.
+  when_to_use:
+  - User describes an item loosely by attribute, price, or feature
+  - Multiple variants of the same product exist in an order
+  - User insists an item is in an order but details show otherwise
+  steps:
+  - Call get_order_details to retrieve all items with item ids, options, and prices.
+  - Compare the user's described attributes against each item's options and price.
+  - State clearly what the order actually contains and present matching candidates
+    with item id, options, and price.
+  - Ask the user to confirm the exact item id, then restate the intended action and
+    get explicit confirmation before any update.
+  pitfalls:
+  - Assuming the first item of a product is the one meant.
+  - Acting on the wrong item without confirming the item id.
+  - Assuming an item exists in an order without checking order details.
+  provenance:
+  - '28'
+  - '29'
+  - '35'
+  - '84'
+  version: 1
+- name: exchange_delivered_order_items
+  description: Exchange one or more items from a delivered order for different options
+    of the same product.
+  when_to_use:
+  - User asks to exchange or swap items they received
+  - User wants a different size, color, or option of a product already bought
+  - Order status is delivered
+  steps:
+  - Authenticate the user before anything else.
+  - Call get_order_details to confirm the order belongs to the user and status is
+    delivered.
+  - Call get_product_details for each product to list available variants of the same
+    product with different options; never change product type.
+  - Present only available matching variants with prices and let the user choose.
+  - Compute the price difference and state whether it is a refund or charge.
+  - Ask for a payment method for the difference (original method or existing gift
+    card); verify gift card balance covers any charge and use a real payment method
+    id from the profile or order history.
+  - Remind the user to confirm they have listed ALL items to exchange, since exchange
+    can only be done once per order.
+  - List full exchange details (order, old item, new item, price difference, payment
+    method) and obtain explicit yes confirmation.
+  - Call exchange_delivered_order_items once with all item_ids and new_item_ids collected
+    together.
+  - Inform the user the status is now exchange requested and return instructions will
+    be emailed.
+  pitfalls:
+  - Calling exchange_delivered_order_items more than once or before collecting all
+    items.
+  - Exchanging to a different product type instead of a different option of the same
+    product.
+  - Selecting an unavailable variant or silently swapping in different specs without
+    consent.
+  - Skipping identity verification because the user supplied an order id.
+  - Accepting a guessed or invented payment method id.
+  - Proceeding without explicit confirmation of the full details.
+  provenance:
+  - '0'
+  - '1'
+  - '6'
+  - '7'
+  - '8'
+  - '29'
+  - '52'
+  - '58'
+  - '75'
+  - '80'
+  - '93'
+  - '95'
+  - '98'
+  - '99'
+  - '105'
+  - '106'
+  - '107'
+  version: 1
+- name: handle_item_selection_changes
+  description: Manage a user who revises or narrows the set of items to exchange or
+    return before confirmation.
+  when_to_use:
+  - User changes their mind about which items to include mid-conversation
+  - User initially requests multiple items then reduces to a subset
+  steps:
+  - Re-summarize the updated item list and recompute the price difference after each
+    change.
+  - Re-confirm the payment method and that the user has provided all items.
+  - Only call the action tool after the user gives a final explicit confirmation of
+    the revised list.
+  pitfalls:
+  - Using stale item lists from an earlier summary.
+  - Assuming the original multi-item request still stands after the user narrows it.
+  provenance:
+  - '8'
+  version: 1
+- name: handle_out_of_stock_fallback_options
+  description: Resolve a user's preferred item option when the exact variant is unavailable
+    by offering their stated fallback or the closest available variant.
+  when_to_use:
+  - User requests a specific option combination that may not be in stock
+  - User states a fallback preference
+  - get_product_details shows the ideal variant is unavailable
+  steps:
+  - Call get_product_details to inspect all variants and availability flags.
+  - Check whether the exact requested option combination is available.
+  - If unavailable, apply the user's stated fallback preference if given; otherwise
+    present the closest available variants and flag any spec differences.
+  - Clearly tell the user which variants are out of stock and which available variant
+    is proposed.
+  - Confirm the chosen variant with the user before including it in any exchange or
+    modification.
+  pitfalls:
+  - Assuming a variant is available without checking the available flag.
+  - Ignoring a fallback preference the user explicitly provided.
+  - Proceeding with an out-of-stock variant.
+  - Silently swapping in a variant with different specs than requested.
+  provenance:
+  - '0'
+  - '52'
+  - '54'
+  version: 1
+- name: verify_variant_availability
+  description: Confirm a requested replacement variant exists and is available before
+    proposing or executing an exchange or modification.
+  when_to_use:
+  - User requests a specific option combination for a replacement item
+  - Planning an exchange or pending-order item modification
+  - User conditions a swap on price or a specific attribute
+  steps:
+  - Call get_product_details for the product id of the item being changed.
+  - Filter variants by the required option values and the available flag.
+  - For cheapest requests, pick the lowest-priced variant among available matches
+    only.
+  - Compare against the current item price to determine refund/charge direction.
+  - If no matching available variant exists, tell the user and do not proceed with
+    that item.
+  pitfalls:
+  - Assuming a variant exists from the user's description alone.
+  - Proposing an unavailable variant as the replacement.
+  - Ignoring a price condition and proposing a more expensive variant.
+  - Changing product type instead of only options of the same product.
+  provenance:
+  - '23'
+  - '54'
+  version: 1
+- name: modify_pending_order_items
+  description: Change item options on a pending order to a different available variant
+    of the same product, with price-difference payment.
+  when_to_use:
+  - User asks to change color/size/material/style of items in a pending order
+  - User wants to swap items in an order that has not shipped
+  - User asks to remove a single item from a pending order
+  steps:
+  - Authenticate the user and call get_order_details to confirm status is pending
+    and identify current item ids.
+  - Explain that only same-product option swaps are allowed; product type cannot change
+    and items cannot be removed.
+  - Call get_product_details (or get_item_details for a given new item id) to find
+    an available variant matching the requested options.
+  - Compute the price difference and state whether it is a refund or charge.
+  - Ask for a payment method for the difference (original method or existing gift
+    card with sufficient balance).
+  - Remind the user that item modification can only be done once and the order cannot
+    be modified or cancelled afterward; ask them to confirm all items to change.
+  - Collect all item_ids and new_item_ids into lists, then after explicit confirmation
+    call modify_pending_order_items once with order_id, item_ids, new_item_ids, and
+    payment_method_id.
+  - Report the updated order status and refund/charge result.
+  pitfalls:
+  - Calling modify_pending_order_items more than once or before collecting all items.
+  - Modifying items in orders that are not pending.
+  - Changing product type or attempting to remove items entirely.
+  - Skipping the one-time-modification warning and explicit confirmation.
+  - Confusing product id with item id when looking up variants.
+  - Selecting an unavailable variant.
+  provenance:
+  - '3'
+  - '15'
+  - '21'
+  - '57'
+  - '63'
+  - '72'
+  - '78'
+  - '109'
+  - '110'
+  - '112'
+  version: 1
+- name: pending_order_modify_sequencing
+  description: Handle a pending order where the user wants item changes plus other
+    modifications like address, sequencing actions correctly.
+  when_to_use:
+  - User asks to modify item options on a pending order
+  - User also wants to change shipping address or default address
+  - Order status is pending and item modification is requested
+  steps:
+  - Authenticate the user and confirm the order status is pending.
+  - Collect and confirm all desired changes (address, default address, item swaps)
+    before applying the item modification.
+  - For address changes, read back the full new address (or read it from a referenced
+    order) and confirm.
+  - For item swaps, call get_product_details to find available variants, compute the
+    price difference, and confirm the payment method.
+  - Warn that item modification is one-time and locks the order from further modification
+    or cancellation.
+  - After explicit confirmation, call modify_pending_order_address and/or modify_user_address,
+    then call modify_pending_order_items once with all item ids.
+  - If the user later requests changes on a now-locked order, explain it cannot be
+    modified and offer transfer to a human agent.
+  pitfalls:
+  - Applying the item modification before collecting and confirming other pending
+    changes such as address.
+  - Calling modify_pending_order_items more than once or without all items in a single
+    list.
+  - Failing to warn that the order can no longer be modified or cancelled after the
+    item change.
+  - Updating the default address without confirming it matches the intended new address.
+  provenance:
+  - '41'
+  - '104'
+  - '109'
+  - '110'
+  version: 1
+- name: modify_pending_order_address
+  description: Change the shipping address on a pending order and/or the user's default
+    address after confirmation.
+  when_to_use:
+  - User asks to change the shipping address of a pending order
+  - User asks to update their default account address
+  - User references an address already on another of their orders
+  steps:
+  - Authenticate the user and call get_order_details to verify ownership and pending
+    status.
+  - If the user references an address on another order, read it from that order's
+    details and read it back for confirmation.
+  - Collect the full new address (address1, address2, city, state, zip, country) and
+    confirm the order total is unchanged.
+  - Present the exact list of actions (default address update and which pending orders)
+    and obtain explicit yes confirmation.
+  - Call modify_user_address for the default address and modify_pending_order_address
+    for each pending order.
+  - Summarize what changed and note which orders could not be modified because they
+    are not pending.
+  pitfalls:
+  - Modifying addresses on delivered, processed, or cancelled orders.
+  - Calling the modify tool before explicit confirmation of the full address.
+  - Confusing the order's shipping address with the user's default address without
+    confirming which one the user means.
+  - Reverting order addresses when the user only asked to revert the default address.
+  provenance:
+  - '22'
+  - '34'
+  - '43'
+  - '59'
+  - '87'
+  - '110'
+  version: 1
+- name: return_delivered_order_items
+  description: Return one or more items from delivered orders, enforcing refund-method
+    rules and confirming details.
+  when_to_use:
+  - User asks to return or send back items
+  - User asks to cancel items from an order that is already delivered
+  - User wants a refund for items they received
+  - User asks to return everything except specific items
+  steps:
+  - Authenticate the user and call get_user_details to see payment methods and gift
+    cards.
+  - Call get_order_details for each referenced order to confirm status is delivered
+    and list items with item ids and prices.
+  - If the user asks to return all but certain items, derive the return list by excluding
+    the kept items and present it.
+  - Explain that refunds must go to the order's original payment method or an existing
+    gift card; if the user requests a disallowed method, explain and offer valid options.
+  - Confirm the exact item list and refund method; compute and state the total refund
+    and standard timeline (5-7 business days for non-gift-card, immediate for gift
+    card).
+  - Present a full return summary and obtain explicit yes confirmation.
+  - Call return_delivered_order_items once per order with that order's item_ids and
+    the chosen payment_method_id.
+  - Confirm the new 'return requested' status and that an email with return instructions
+    will follow.
+  pitfalls:
+  - Refunding to a payment method that is neither the original payment method nor
+    an existing gift card.
+  - Processing a return on an order whose status is not delivered.
+  - Calling the return tool before explicit confirmation of item list and refund method.
+  - Combining items from different orders into a single return call.
+  - Assuming 'everything' means all items without confirming the exact list.
+  - Promising a faster refund timeline than standard.
+  provenance:
+  - '10'
+  - '11'
+  - '13'
+  - '14'
+  - '28'
+  - '46'
+  - '47'
+  - '48'
+  - '73'
+  - '82'
+  - '83'
+  - '84'
+  - '89'
+  - '92'
+  - '104'
+  version: 1
+- name: cancel_pending_order
+  description: Cancel a pending order after verifying status and collecting a valid
+    reason, including partial-cancel denial.
+  when_to_use:
+  - User asks to cancel an order
+  - User asks to cancel only some items from a pending order
+  - User declines modification/return alternatives and wants the order cancelled
+  steps:
+  - Authenticate the user and call get_order_details to confirm status is pending
+    and list contents.
+  - If the user asks to remove only some items, explain cancellation applies to the
+    whole order and item modification only swaps options of the same product.
+  - List the other items in the order so the user understands the impact of whole-order
+    cancellation.
+  - Ask for a cancellation reason, accepting only 'no longer needed' or 'ordered by
+    mistake'.
+  - State the refund amount and method/timing (gift card immediate, otherwise 5-7
+    business days).
+  - Obtain explicit yes confirmation of order id and reason, then call cancel_pending_order
+    once per confirmed order.
+  - Report cancellation results and refund timing; if the user declines, leave the
+    order unchanged.
+  pitfalls:
+  - Attempting partial-item cancellation or implying it is possible.
+  - Cancelling orders that are not pending.
+  - Accepting a cancellation reason other than the two allowed values.
+  - Cancelling without explicit confirmation of order id and reason.
+  - Promising to redirect a cancellation refund to a different card.
+  provenance:
+  - '24'
+  - '28'
+  - '34'
+  - '57'
+  - '59'
+  - '66'
+  - '76'
+  - '81'
+  - '98'
+  - '99'
+  - '113'
+  version: 1
