@@ -5,6 +5,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Keep macOS awake for the whole run; idle sleep pauses it for hours.
+if [[ $(uname) == Darwin && -z ${CAFFEINATED:-} ]]; then
+  CAFFEINATED=1 exec caffeinate -i "$0" "$@"
+fi
+
 RAS=.venv/bin/ras
 TRAIN=results/raw/main-train-vanilla/results.json
 VAL_TRIALS=${VAL_TRIALS:-2}

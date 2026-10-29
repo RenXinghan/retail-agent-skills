@@ -1,0 +1,106 @@
+- name: verify_payment_method_and_balance_before_exchange_or_refund
+  description: Confirm the payment method exists on file and has sufficient balance
+    before submitting an exchange, modification, or refund that charges or credits
+    a price difference.
+  when_to_use:
+  - Customer provides a payment method ID for an exchange or order modification
+  - Customer offers to pay a price difference with a gift card
+  - Customer requests a refund to a gift card or specific card
+  - The new item costs more than the original and a price difference must be charged
+  steps:
+  - Call get_user_details to retrieve the user's payment methods and gift card balance
+    before confirming the payment method
+  - Confirm the provided payment method ID exists and matches the customer's account;
+    if not found, ask the customer to re-check or choose another method on file
+  - Compare the gift card balance against the full price difference and tell the customer
+    if it is insufficient; do not partially apply the gift card
+  - For refunds, call get_gift_card_details to check the gift card balance and confirm
+    the refund amount does not exceed it
+  - Look up the exact payment_method_id for the chosen method and pass that exact
+    ID in the exchange/return tool call
+  - Verify the tool result reflects the intended payment method before confirming
+    to the user
+  pitfalls:
+  - Confirming the exchange with a gift card without first checking that its balance
+    covers the full price difference
+  - Calling exchange_delivered_order_items with an unverified payment method ID, causing
+    a 'Payment method not found' error and an unnecessary transfer to a human agent
+  - Assuming a gift card can receive a refund without verifying its balance or validity
+  - Passing a different payment method id than the one the user explicitly chose,
+    causing the refund to go to the wrong card
+  provenance:
+  - '105'
+  - '63'
+  - '75'
+  - '99'
+  version: 1
+- name: verify_order_address_before_address_change
+  description: Handle requests to change a default address or an order's shipping
+    address when the user references an address from another order.
+  when_to_use:
+  - User asks to update default address or order shipping address
+  - User says the new address is already on file in another order
+  - User refuses to spell out the address and asks the agent to copy it from an order
+  steps:
+  - Call get_order_details for each of the user's orders and compare their addresses
+    to the user's current default address from get_user_details
+  - Identify which order actually ships to the new address versus the old address,
+    and state this explicitly to the user
+  - Confirm the exact address and which order to modify with the user before calling
+    modify_user_address or modify_pending_order_address
+  pitfalls:
+  - Assuming the order containing a particular product is the one at the new address,
+    or mislabeling which order is at the old vs new address, leading to updating the
+    default and order to the wrong (old) address
+  provenance:
+  - '110'
+  version: 1
+- name: compute_and_confirm_price_difference
+  description: Compute and state the exact price difference for an item modification
+    or exchange before asking the user to confirm.
+  when_to_use:
+  - User asks to swap or modify an item to a different variant
+  - Agent is about to quote a refund or charge amount for an item change
+  steps:
+  - Look up the current item price and the new item price from the order and product
+    details
+  - Subtract the new price from the old price to get the exact difference (reverse
+    for a charge)
+  - State the computed difference in the confirmation summary and re-check the arithmetic
+    before calling the modify tool
+  pitfalls:
+  - Quoting an incorrect refund amount (e.g. miscalculating the price difference)
+    and confirming it with the user
+  provenance:
+  - '41'
+  - '96'
+  version: 1
+- name: handle_variant_availability_and_constraints
+  description: Answer variant availability questions and handle exchanges where the
+    customer specifies which product options must stay the same.
+  when_to_use:
+  - User asks for the exact number of options or variants available to buy
+  - User asks how many items of a product are in stock or available
+  - Customer asks to exchange an item while keeping certain options unchanged
+  - The only available variant differs in an option the customer said must stay the
+    same
+  steps:
+  - Call get_product_details for the product and inspect each variant's availability
+    flag
+  - Count only variants marked available and report that as the number purchasable
+    now, separately noting total variants if useful
+  - Compare the requested new item's options against the customer's stated constraints
+    before proposing it
+  - If no available variant satisfies the constraints, tell the customer and ask whether
+    they accept the differing option or want to hold off
+  - Only call exchange_delivered_order_items after the customer explicitly confirms
+    the exact new item and its differing options
+  pitfalls:
+  - Reporting the total number of variants as the available count without checking
+    availability flags
+  - Proceeding with an exchange to a variant that changes an option the customer required
+    to stay the same, without obtaining explicit consent to that change
+  provenance:
+  - '2'
+  - '52'
+  version: 1

@@ -1,0 +1,171 @@
+- name: return_items_across_multiple_orders
+  description: Process returns of specific items spanning one or more delivered orders,
+    grouping items per order and refunding to an allowed method.
+  when_to_use:
+  - User wants to return items from delivered orders
+  - User references multiple orders in one request
+  - User asks to return 'everything' or a category of items
+  steps:
+  - Authenticate the user via find_user_id_by_email or name+zip, then get_user_details.
+  - Call get_order_details for each relevant order to check status and list items
+    with item_ids.
+  - Tell the user which orders are delivered vs pending and clarify exactly which
+    items they want returned.
+  - Point out items that may not match the user's stated category and ask whether
+    to include them; restate the final item list.
+  - Ask which payment method to refund to (original payment method or an existing
+    gift card).
+  - Summarize the return plan per order with item names and refund destination, and
+    ask for explicit yes confirmation.
+  - After confirmation, call return_delivered_order_items once per order with that
+    order's own item_ids and payment_method_id.
+  - Report the new 'return requested' status and email follow-up for each order.
+  pitfalls:
+  - Assuming 'everything' means all items; confirm the exact item list, since non-matching
+    items may be excluded.
+  - Mixing item_ids from different orders into a single return call.
+  - Do not cancel delivered orders; they can only be returned.
+  - Proceeding without explicit user confirmation of the item list and refund method.
+  provenance:
+  - '14'
+  - '16'
+  - '92'
+  version: 1
+- name: modify_pending_order_address
+  description: Change the shipping address on a pending order after identity verification
+    and explicit confirmation.
+  when_to_use:
+  - User asks to change the shipping address of a pending order
+  - User wants an order shipped to a different address
+  - User references an address already on another of their orders
+  steps:
+  - Authenticate the user via email or name + zip code.
+  - Look up the order and confirm its status is pending; tell the user which orders
+    cannot be changed due to status.
+  - If the user references an address from another order, retrieve it via get_order_details
+    and state it back for confirmation rather than asking them to read it out.
+  - Read back the full new address and obtain explicit user confirmation (yes).
+  - Call modify_pending_order_address with the full address fields.
+  - Summarize the change and note which orders were skipped due to status.
+  pitfalls:
+  - Modifying the address without first confirming the order status is pending.
+  - Attempting to modify shipping address on processed/delivered/cancelled orders.
+  - Calling the modify tool before the user explicitly confirms the new address.
+  - Updating the database before listing details and getting explicit confirmation.
+  provenance:
+  - '22'
+  - '34'
+  - '87'
+  - '110'
+  version: 1
+- name: update_default_and_order_addresses
+  description: Update the user's default account address and/or the shipping address
+    of pending orders, including reverting a prior change.
+  when_to_use:
+  - User asks to update their account/default address
+  - User asks to change shipping address on orders
+  - User provides a new address and wants it applied broadly
+  - User asks to revert an address change back to the original
+  steps:
+  - Authenticate the user first via find_user_id_by_name_zip or email lookup, even
+    if they offer a user id.
+  - Call get_user_details to show the current default address and list orders; call
+    get_order_details for each order to determine status.
+  - Identify which orders are pending (only pending orders can have shipping address
+    modified) and tell the user which orders cannot be changed.
+  - If the user references an address from an existing order, infer it from that order
+    and state it back for confirmation.
+  - Present the full new address and the exact list of actions (default address update,
+    specific pending order updates) and ask for explicit yes confirmation.
+  - After confirmation, call modify_user_address for the default address and modify_pending_order_address
+    for each pending order.
+  - For a revert request, confirm the exact original address and scope (default only
+    vs. also order addresses) before calling modify_user_address.
+  - Summarize what was changed and note which orders were skipped due to status.
+  pitfalls:
+  - Attempting to modify shipping address on processed/delivered/cancelled orders
+    instead of only pending ones.
+  - Updating the database before listing details and getting explicit confirmation.
+  - Updating the default address to the old address instead of the new one.
+  - Reverting order shipping addresses when the user only asked to revert the default
+    account address.
+  - Forgetting to also update the default address when the user asked for it.
+  provenance:
+  - '22'
+  - '87'
+  - '109'
+  - '110'
+  version: 1
+- name: handle_multi_request_conversation
+  description: Handle a conversation with several sequential or simultaneous requests
+    (returns, cancellations, modifications, address changes) for one authenticated
+    user.
+  when_to_use:
+  - User asks for multiple changes in one conversation
+  - User makes a second request after a first action is completed
+  - User provides fallback instructions like 'if not possible, cancel'
+  - User asks for totals across previous orders
+  steps:
+  - Authenticate the user first even if they volunteer details or seem impatient.
+  - Retrieve all relevant orders and the user profile to compare addresses and statuses.
+  - Enumerate every requested change and the records each one touches before acting.
+  - 'Classify each order by status: use return_delivered_order_items for delivered
+    orders, modify_pending_order_items for pending orders, and cancel_pending_order
+    for cancellations.'
+  - Apply the user's stated fallback instruction when the primary request is impossible.
+  - Compute any requested historical totals by summing matching item prices across
+    the user's orders.
+  - Present a single consolidated confirmation listing each action, its details, and
+    the exact amounts, and obtain explicit 'yes' confirmation.
+  - Execute each update with the appropriate tool, then summarize all completed changes
+    and refund/charge details.
+  - If the user challenges an amount, recompute from the actual prices and correct
+    the earlier statement.
+  pitfalls:
+  - Proceeding with any database update before obtaining explicit confirmation of
+    all details.
+  - Applying only part of the requested changes.
+  - Quoting an incorrect refund or charge and then having to correct it after the
+    update.
+  - Treating a pending-order item swap as a delivered-order exchange.
+  - Handling requests for more than one user in a single conversation.
+  provenance:
+  - '16'
+  - '30'
+  - '35'
+  - '41'
+  - '109'
+  version: 1
+- name: handle_refund_method_restrictions
+  description: Enforce refund-to-original-payment-or-gift-card rules and resolve user
+    requests for disallowed refund destinations.
+  when_to_use:
+  - User requests a refund to a payment method other than the order's original method
+  - User asks to swap or redirect refunds between orders
+  - User insists on a payment method not on file
+  - User asks where the price difference refund will go
+  steps:
+  - Check the order's original payment method and the user's existing payment methods
+    via get_user_details.
+  - 'Explain the policy restriction plainly: refunds go to the original payment method
+    or an existing gift card.'
+  - 'If the original payment method is a gift card, clarify that both options are
+    gift cards: the same original gift card or a different existing gift card.'
+  - Offer the concrete compliant alternatives and ask the user to choose among them.
+  - If the user still refuses and demands an out-of-policy method, call transfer_to_human_agents
+    with a summary, then send the transfer message.
+  - Only proceed with the return/exchange after confirming an allowed payment method
+    and explicit user confirmation.
+  pitfalls:
+  - Agreeing to refund to a payment method that is neither the order's original method
+    nor an existing gift card.
+  - Implying a credit card refund is possible when the order was paid by gift card.
+  - Transferring before offering the policy-compliant options.
+  - Repeating the same refusal without offering the allowed alternatives.
+  provenance:
+  - '10'
+  - '25'
+  - '80'
+  - '83'
+  - '91'
+  version: 1

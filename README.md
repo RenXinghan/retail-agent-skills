@@ -8,8 +8,9 @@ The question: if an agent keeps transcripts of its earlier conversations and onl
 whether each one ended well, can it distill procedures that make it more reliable on
 requests it has never seen? And how should that memory be put into context?
 
-> **Status:** first full run done (2026-10-29). Skills mined this way did **not** help a strong
-> model: the skill-index agent lost 7.5 points of pass^1 against the plain agent (see Results).
+> **Status:** two experiments done (2026-10-29). Mined skills never beat the plain agent on
+> held-out tasks. The original miner hurt it (−7.5 points pass^1); mining only from failures
+> removed the harm but added nothing. See Results.
 
 ## How the agent works
 
@@ -100,9 +101,42 @@ What this shows:
    agree with the policy. Conversations were not longer (6.4 vs 7.0 customer turns), but the
    agent's context was 56% larger. The mechanism is not pinned down yet.
 
-Next: accept a skill only if it improves a held-out part of the train split (validation-gated
-updates), mine only from failures, and repeat on the harder airline domain (30 train / 20 test
-tasks) or with a weaker agent, where there is more headroom.
+### Experiment 2: failure-only mining and validation gating
+
+The train split is divided into a mining part (49 tasks) and a validation part (25 tasks, every
+third id). Two libraries are mined from the mining part's runs: the original miner (at most 12
+skills) and a failure-only miner, which looks only at tasks the plain agent failed at least once
+and writes one skill per failure around the mistake made (at most 6 skills). Each library runs
+on the validation part (2 trials) and is gated: a skill stays if at least two validation
+conversations loaded it and those conversations did no worse than the plain agent on the same
+tasks (`ras gate`). Every library then runs in `skills_index` mode on the test split (40 × 3).
+
+| library | skills | pass^1 | pass^3 | Δ pass^1 vs vanilla (95% CI) | tasks worse / better |
+|---|---|---|---|---|---|
+| `vanilla`, rerun | — | 0.933 | 0.850 | +0.008 [−0.017, +0.042] | 1 / 2 |
+| original miner, 74 tasks (Experiment 1) | 12 | 0.850 | 0.700 | −0.075 [−0.133, −0.025] | 7 / 0 |
+| original miner, 49 tasks | 12 | 0.908 | 0.800 | −0.017 [−0.092, +0.067] | 7 / 4 |
+| … gated | 5 | 0.908 | 0.825 | −0.017 [−0.050, +0.017] | 3 / 1 |
+| failure-only miner, 49 tasks | 6 | 0.917 | 0.825 | −0.008 [−0.042, +0.025] | 3 / 2 |
+| … gated | 4 | 0.883 | 0.750 | −0.042 [−0.075, −0.008] | 5 / 0 |
+
+1. **Evaluation noise is small.** Rerunning the plain agent moved pass^1 by 0.008, with 3 tasks
+   changing. The drops above are not run-to-run noise.
+2. **The library matters more than the method.** The same miner gave −0.075 from 74 tasks and
+   −0.017 from 49. Which skills come out of mining, and how they are worded, is itself a large
+   source of variance, so one mined library says little about a mining method.
+3. **Mining only from failures removed the harm** with half as many skills (−0.008, interval
+   includes zero) but did not beat the plain agent, which already solves 34 of 40 test tasks in
+   every trial.
+4. **Gating on 25 validation tasks did not help**, and hurt the failure-only library.
+   Attributing about 50 conversations to skills by co-occurrence is too noisy to separate good
+   skills from bad ones.
+
+Both experiments together cost about ¥30 on DeepSeek's API.
+
+Next: estimate a mining method over several independently mined libraries, gate on more
+validation conversations or by ablating one skill at a time, and move to the harder airline
+domain or a weaker agent, where the plain agent leaves more failures to fix.
 
 ## Quickstart
 

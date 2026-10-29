@@ -1,0 +1,266 @@
+- name: verify_payment_method_balance_before_exchange
+  description: Handle exchange or modify requests where the customer wants to pay
+    a price difference with a gift card.
+  when_to_use:
+  - customer requests an exchange or modification that results in a price difference
+  - customer offers to pay the difference with a gift card
+  steps:
+  - Call get_user_details to retrieve the gift card balance before confirming the
+    payment method.
+  - Compare the gift card balance against the full price difference and tell the customer
+    if it is insufficient.
+  - If insufficient, ask for a different payment method that can cover the full difference;
+    do not partially apply the gift card.
+  pitfalls:
+  - Confirming the exchange with a gift card without first checking that its balance
+    covers the full price difference.
+  provenance:
+  - '105'
+  version: 1
+- name: verify_order_status_before_exchange_or_return
+  description: Check the order status before attempting an exchange or return, and
+    use the correct action for pending vs delivered orders.
+  when_to_use:
+  - User asks to exchange or return an item
+  - User refers to an item in an order without stating its status
+  - Order status has not yet been confirmed via get_order_details
+  steps:
+  - Call get_order_details for the order and read its status field before choosing
+    an action
+  - If status is 'delivered', use exchange_delivered_order_items or return_delivered_order_items
+  - If status is 'pending', offer modify_pending_order_items instead of an exchange,
+    and explain the one-time modification rule
+  pitfalls:
+  - Calling exchange_delivered_order_items on a pending order, which fails with 'Non-delivered
+    order cannot be exchanged'
+  - Assuming an order is delivered without checking its status
+  provenance:
+  - '109'
+  version: 1
+- name: verify_order_address_before_address_change
+  description: Handling requests to change a default address or an order's shipping
+    address when the user references an address from another order
+  when_to_use:
+  - user asks to update default address or order shipping address
+  - user says the new address is already on file in another order
+  - user refuses to spell out the address and asks the agent to copy it from an order
+  steps:
+  - Call get_order_details for each of the user's orders and compare their addresses
+    to the user's current default address from get_user_details
+  - Identify which order actually ships to the new address versus the old address,
+    and state this explicitly to the user
+  - Confirm the exact address and which order to modify with the user before calling
+    modify_user_address or modify_pending_order_address
+  pitfalls:
+  - Assuming the order containing a particular product is the one at the new address,
+    or mislabeling which order is at the old vs new address, leading to updating the
+    default and order to the wrong (old) address
+  provenance:
+  - '110'
+  version: 1
+- name: confirm_item_list_before_return
+  description: Handling return requests for delivered orders with multiple items
+  when_to_use:
+  - User asks to return items from a delivered order
+  - Order contains multiple items and user specifies a subset to return
+  steps:
+  - Call get_order_details to list every item with its item_id and options
+  - Read back the exact item names and item_ids the user wants returned and get explicit
+    confirmation before calling return_delivered_order_items
+  - Pass only the confirmed item_ids in the return tool call
+  pitfalls:
+  - Including an item the user did not ask to return (e.g. adding an extra item to
+    the return list) or omitting a requested item
+  provenance:
+  - '14'
+  version: 1
+- name: count_available_product_variants
+  description: Answering how many product options/variants are actually purchasable
+    right now
+  when_to_use:
+  - user asks for the exact number of options or variants available to buy
+  - user asks how many items of a product are in stock or available
+  steps:
+  - Call get_product_details for the product and inspect each variant's availability
+    flag
+  - Count only variants marked available and report that as the number purchasable
+    now, separately noting total variants if useful
+  pitfalls:
+  - Reporting the total number of variants as the available count without checking
+    availability flags
+  provenance:
+  - '2'
+  version: 1
+- name: verify_price_difference_before_confirming
+  description: Compute and state the exact price difference for an item modification
+    or exchange before asking the user to confirm.
+  when_to_use:
+  - user asks to swap or modify an item to a different variant
+  - agent is about to quote a refund or charge amount for an item change
+  steps:
+  - Look up the current item price and the new item price from the order and product
+    details
+  - Subtract the new price from the old price to get the exact difference
+  - State the computed difference in the confirmation summary and re-check the arithmetic
+    before calling the modify tool
+  pitfalls:
+  - Quoting an incorrect refund amount (e.g. miscalculating the price difference)
+    and confirming it with the user
+  provenance:
+  - '41'
+  version: 1
+- name: handle_refund_timeline_requests
+  description: Handling customer requests for faster-than-standard refund timelines
+    during returns
+  when_to_use:
+  - customer asks for refund within a specific short timeframe
+  - customer demands expedited refund or says standard timeline is unacceptable
+  steps:
+  - Explain the standard refund timeline (5-7 business days for non-gift-card methods)
+    and that it cannot be expedited
+  - Offer the existing gift card option if the customer has one, since it credits
+    immediately
+  - If the customer still insists on an impossible timeline, do not transfer to a
+    human agent; instead ask whether they want to proceed with the standard timeline
+    or hold off
+  pitfalls:
+  - Transferring to a human agent just because the customer wants a faster refund
+    than policy allows, when the request can be handled by explaining the limitation
+    and offering alternatives
+  provenance:
+  - '46'
+  version: 1
+- name: exchange_requires_customer_consent_to_spec_changes
+  description: Handling exchange requests where the customer specifies which product
+    options must stay the same and which may change
+  when_to_use:
+  - Customer asks to exchange an item while keeping certain options unchanged (e.g.,
+    'same specs, just more zoom')
+  - The only available variant differs in an option the customer said must stay the
+    same
+  steps:
+  - Compare the requested new item's options against the customer's stated constraints
+    before proposing it
+  - If no available variant satisfies the constraints, tell the customer and ask whether
+    they accept the differing option or want to hold off
+  - Only call exchange_delivered_order_items after the customer explicitly confirms
+    the exact new item and its differing options
+  pitfalls:
+  - Proceeding with an exchange to a variant that changes an option the customer required
+    to stay the same, without obtaining explicit consent to that change
+  provenance:
+  - '52'
+  version: 1
+- name: verify_gift_card_balance_before_refund
+  description: Handling refunds to a gift card during order modification or return
+  when_to_use:
+  - customer requests a refund to a gift card
+  - modifying or returning an order with a price difference
+  steps:
+  - Call get_gift_card_details to check the gift card balance before confirming the
+    refund destination
+  - Confirm the refund amount does not exceed the gift card balance
+  - Only then proceed with the modification or return using that payment method
+  pitfalls:
+  - Assuming a gift card can receive a refund without verifying its balance or validity
+  provenance:
+  - '63'
+  version: 1
+- name: confirm_before_cancel_or_modify
+  description: Ensure explicit user confirmation of action details before any database-updating
+    action like cancel, modify, return, or exchange.
+  when_to_use:
+  - User requests cancellation, modification, return, or exchange of an order
+  - Agent is about to call a tool that updates the database (cancel_pending_order,
+    modify_pending_order, return_delivered_order, exchange_delivered_order)
+  steps:
+  - List the action details (order id, items, amount, refund method, reason if applicable)
+    to the user
+  - Ask the user to explicitly confirm with 'yes' before proceeding
+  - Only after receiving explicit confirmation, call the appropriate update tool
+  pitfalls:
+  - Calling cancel_pending_order or other update tools without first listing details
+    and obtaining explicit user confirmation
+  provenance:
+  - '69'
+  version: 1
+- name: verify_payment_method_before_exchange
+  description: Confirm the customer's payment method exists on file before submitting
+    an exchange or modification that charges a price difference.
+  when_to_use:
+  - Customer provides a payment method ID for an exchange or order modification
+  - The new item costs more than the original and a price difference must be charged
+  - Customer is unsure of or reading a payment method ID from their account
+  steps:
+  - Look up the user's profile/payment methods to confirm the provided payment method
+    ID exists and matches the customer's account
+  - If the ID is not found, ask the customer to re-check or choose another payment
+    method on file before calling exchange_delivered_order_items or modify tools
+  - Only call the exchange/modify tool once a valid payment method ID is confirmed
+  pitfalls:
+  - Calling exchange_delivered_order_items with an unverified payment method ID, causing
+    a 'Payment method not found' error and an unnecessary transfer to a human agent
+  provenance:
+  - '75'
+  version: 1
+- name: verify_refund_payment_method_before_return
+  description: Handle return requests for delivered orders by checking the original
+    payment method before promising or attempting a refund destination.
+  when_to_use:
+  - User asks to return a delivered item and receive a refund on a specific card or
+    payment method
+  - User says 'my card' or names a payment method without specifying whether it matches
+    the original payment
+  steps:
+  - Call get_order_details to inspect the order's payment history and identify the
+    original payment method for the item being returned
+  - Tell the user the refund can only go to the original payment method or an existing
+    gift card, and state which method that is before confirming the return
+  - Only call return_delivered_order_items with a payment_method_id that matches the
+    original payment method or an existing gift card
+  pitfalls:
+  - Promising or attempting to refund to a credit card when the order was originally
+    paid with a gift card, causing a tool error and a failed return
+  - Asking the user to choose a refund card without first checking the order's original
+    payment method
+  provenance:
+  - '83'
+  version: 1
+- name: verify_price_difference_calculation
+  description: Compute and state the exact price difference/refund when swapping or
+    exchanging an item.
+  when_to_use:
+  - user asks to swap or exchange an item for a different variant
+  - agent is about to quote a refund or charge for an item modification
+  steps:
+  - Look up the current item's price and the new item's price from the order and product
+    details.
+  - Subtract the new price from the old price to compute the refund (or reverse for
+    a charge).
+  - State the computed difference explicitly and double-check the arithmetic before
+    confirming with the user.
+  pitfalls:
+  - Miscalculating the price difference (e.g., stating $4.76 instead of $3.76) when
+    quoting the refund for an item swap.
+  provenance:
+  - '96'
+  version: 1
+- name: use_confirmed_payment_method_id
+  description: Processing exchanges or returns where the user has chosen a specific
+    payment method for the refund or charge.
+  when_to_use:
+  - User selects a payment method (e.g., 'send the refund to the Visa') for an exchange
+    or return
+  - About to call exchange_delivered_order_items or return_delivered_order_items
+  steps:
+  - Look up the exact payment_method_id for the chosen method from the user's profile
+    via get_user_details
+  - Pass that exact payment_method_id in the exchange/return tool call
+  - Verify the tool result reflects the intended payment method before confirming
+    to the user
+  pitfalls:
+  - Passing a different payment method id than the one the user explicitly chose,
+    causing the refund to go to the wrong card
+  provenance:
+  - '99'
+  version: 1
