@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from functools import partial
@@ -26,6 +27,7 @@ from retail_agent.gating import gate
 from retail_agent.mining import mine
 from retail_agent.skills import SkillLibrary
 from retail_agent.splits import PARTS, train_part
+from retail_agent.stats import paired_delta, task_success
 from retail_agent.trajectories import TrajectoryStore, load_trajectories
 
 DOMAIN = "retail"
@@ -221,6 +223,32 @@ def summarize(path: Path, results: Results | None = None) -> dict:
     }
 
 
+def cmd_compare(args: argparse.Namespace) -> None:
+    """Paired per-task comparison of runs against a baseline run on the same tasks."""
+    paths = list(dict.fromkeys([args.baseline, *args.runs]))  # baseline may match a glob
+    success = {p: task_success(Results.load(Path(p)).simulations) for p in paths}
+    base = success[args.baseline]
+    print("| run | pass^1 | Δ pass^1 vs baseline (95% CI) | tasks worse / better |")
+    print("|---|---|---|---|")
+    for p in paths:
+        k = sum(s for s, _ in success[p].values())
+        n = sum(t for _, t in success[p].values())
+        name = Path(p).parent.name
+        if p == args.baseline:
+            print(f"| {name} (baseline) | {k / n:.3f} | — | — |")
+            continue
+        d = paired_delta(success[p], base)
+        ci = f"{d.mean:+.3f} [{d.low:+.3f}, {d.high:+.3f}]"
+        print(f"| {name} | {k / n:.3f} | {ci} | {d.worse} / {d.better} |")
+    if args.csv:
+        with open(args.csv, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["run", "task_id", "successes", "trials"])
+            for p in paths:
+                for task, (k, n) in sorted(success[p].items(), key=lambda x: int(x[0])):
+                    w.writerow([Path(p).parent.name, task, k, n])
+
+
 def cmd_report(args: argparse.Namespace) -> None:
     rows = [summarize(Path(p)) for p in args.results]
     ks = sorted({k for r in rows for k in r["pass^k"]})
@@ -313,6 +341,12 @@ def main() -> None:
     gt.add_argument("--out", required=True)
     gt.add_argument("--min-uses", type=int, default=2)
     gt.set_defaults(func=cmd_gate)
+
+    cmp = sub.add_parser("compare", help="paired per-task comparison against a baseline run")
+    cmp.add_argument("--baseline", required=True, help="results.json of the baseline run")
+    cmp.add_argument("runs", nargs="+", help="results.json files to compare")
+    cmp.add_argument("--csv", help="also write per-task successes to this CSV")
+    cmp.set_defaults(func=cmd_compare)
 
     rep = sub.add_parser("report", help="markdown table over finished runs")
     rep.add_argument("results", nargs="+")

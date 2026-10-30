@@ -71,6 +71,11 @@ from, and `ras mine` refuses inputs that did not come from the train split.
 
 ## Results
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/results-dark.png">
+  <img alt="Change in pass^1 against the plain agent for every configuration, with 95% paired bootstrap intervals. Only the plain-agent rerun is above zero; the 74-task skill index (−7.5) and the gated failure-only library (−4.2) are significantly below." src="docs/results-light.png">
+</picture>
+
 DeepSeek-V4.1-Flash (non-thinking, temperature 0) plays the agent, the simulated customer, the
 NL-assertion judge and the miner. Train: 74 tasks × 2 trials (plain agent pass^1 0.831), mined
 into 12 skills from 121 candidates (`skills/main.yaml`). Test: 40 held-out tasks × 3 trials.
@@ -161,7 +166,21 @@ ras run --mode skills_index --skills skills/retail.yaml --split test --trials 3
 ras report results/raw/*/results.json
 ```
 
-Interrupted runs resume when the same command is rerun.
+Interrupted runs resume when the same command is rerun. Experiment 2 is
+`./scripts/run_experiment2.sh`; both scripts keep macOS awake while they run.
+
+Analysis from finished runs:
+
+```bash
+# paired per-task comparison against the plain agent, plus a per-task CSV
+ras compare --baseline results/raw/main-test-vanilla/results.json \
+  results/raw/main-test-*/results.json results/raw/exp2-test-*/results.json \
+  --csv results/per_task.csv
+.venv/bin/python scripts/plot_results.py   # docs/results-{light,dark}.png from that CSV
+```
+
+`results/per_task.csv` (committed) holds per-task successes for every test run, so the
+intervals and the figure can be reproduced without the raw transcripts.
 
 ## Notes
 
@@ -170,16 +189,25 @@ Interrupted runs resume when the same command is rerun.
   simulator model), so numbers are comparable across configurations here but not directly with
   the official leaderboard.
 - The same user-simulator model and seed are used for every configuration.
+- [docs/engineering-notes.md](docs/engineering-notes.md) collects the problems hit along the
+  way: thinking mode and tool calls, an optional tool the model never used, prompt-cache hit
+  rates, BM25 on tiny corpora, laptop sleep during long runs.
 
 ## Layout
 
 ```
 src/retail_agent/
-  agent.py         LangGraph turn graph, memory modes, internal read_skill tool
+  agent.py         LangGraph turn graph, memory modes, internal read_skills tool
   skills.py        Skill schema, YAML library, BM25+ retrieval
   trajectories.py  compact transcripts from τ²-bench results, trajectory store
-  mining.py        reflect-then-consolidate skill miner
-  cli.py           ras run | mine | report
-scripts/           setup and full experiment protocol
-tests/             offline tests with scripted LLMs
+  mining.py        reflect-then-consolidate miner, optional failure-only mode
+  gating.py        validation gating of a skill library
+  splits.py        fixed mining / validation split of the train tasks
+  stats.py         per-task success and paired bootstrap comparison
+  cli.py           ras run | mine | gate | compare | report | ping
+scripts/           setup, experiment protocols, results figure
+skills/            mined libraries (and their candidates) used in the experiments
+results/           summary tables and per-task successes; raw transcripts are not committed
+docs/              results figure, engineering notes
+tests/             offline tests with scripted LLMs (run in CI)
 ```

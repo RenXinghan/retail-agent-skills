@@ -276,3 +276,17 @@ def test_gate_drops_skills_used_in_regressions():
     assert by_name[EXCHANGE.name].effect == pytest.approx(-0.5)
     assert by_name[CANCEL.name].effect == pytest.approx(0.5)
     assert by_name["unused"].uses == 0 and not by_name["unused"].kept
+
+
+def test_paired_delta():
+    from retail_agent.stats import paired_delta
+
+    base = {"1": (3, 3), "2": (3, 3), "3": (1, 3)}
+    same = paired_delta(base, base)
+    assert (same.mean, same.low, same.high, same.worse, same.better) == (0, 0, 0, 0, 0)
+    run = {"1": (0, 3), "2": (3, 3), "3": (1, 3)}
+    d = paired_delta(run, base)
+    assert d.mean == pytest.approx(-1 / 3) and d.worse == 1 and d.better == 0
+    assert d.low <= d.mean <= d.high <= 0
+    with pytest.raises(ValueError):
+        paired_delta({"1": (1, 1)}, base)
