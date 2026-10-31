@@ -8,9 +8,27 @@ The question: if an agent keeps transcripts of its earlier conversations and onl
 whether each one ended well, can it distill procedures that make it more reliable on
 requests it has never seen? And how should that memory be put into context?
 
-> **Status:** two experiments done (2026-10-29). Mined skills never beat the plain agent on
-> held-out tasks. The original miner hurt it (−7.5 points pass^1); mining only from failures
-> removed the harm but added nothing. See Results.
+[![ci](https://github.com/RenXinghan/retail-agent-skills/actions/workflows/ci.yml/badge.svg)](https://github.com/RenXinghan/retail-agent-skills/actions/workflows/ci.yml)
+
+## At a glance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/results-dark.png">
+  <img alt="Change in pass^1 against the plain agent for every configuration, with 95% paired bootstrap intervals. Only the plain-agent rerun is above zero; the 74-task skill index (−7.5) and the gated failure-only library (−4.2) are significantly below." src="docs/results-light.png">
+</picture>
+
+- **Mined skills did not beat the plain agent** on 40 held-out tasks × 3 trials. The original
+  miner's library cost 7.5 points of pass^1 (95% CI excludes zero); mining only from failures
+  removed the harm but added nothing. A rerun of the plain agent moved by 0.8 points, so the
+  drops are not evaluation noise.
+- **The model never used an optional skill tool** (0 loads in 5 pilot conversations), even when
+  told to; forcing one skill-selection call per customer turn fixed it.
+- **The library matters more than the method**: the same miner gave −7.5 or −1.7 points
+  depending on which 74 or 49 tasks it learned from.
+
+[Example conversation](docs/example-conversation.md) ·
+[Engineering notes](docs/engineering-notes.md) ·
+[Full results](#results)
 
 ## How the agent works
 
@@ -70,11 +88,6 @@ skills are loaded) without relying on the model to remember that memory exists.
 from, and `ras mine` refuses inputs that did not come from the train split.
 
 ## Results
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/results-dark.png">
-  <img alt="Change in pass^1 against the plain agent for every configuration, with 95% paired bootstrap intervals. Only the plain-agent rerun is above zero; the 74-task skill index (−7.5) and the gated failure-only library (−4.2) are significantly below." src="docs/results-light.png">
-</picture>
 
 DeepSeek-V4.1-Flash (non-thinking, temperature 0) plays the agent, the simulated customer, the
 NL-assertion judge and the miner. Train: 74 tasks × 2 trials (plain agent pass^1 0.831), mined
@@ -208,6 +221,6 @@ src/retail_agent/
 scripts/           setup, experiment protocols, results figure
 skills/            mined libraries (and their candidates) used in the experiments
 results/           summary tables and per-task successes; raw transcripts are not committed
-docs/              results figure, engineering notes
+docs/              results figure, example conversation, engineering notes
 tests/             offline tests with scripted LLMs (run in CI)
 ```
